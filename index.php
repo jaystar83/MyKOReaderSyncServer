@@ -24,7 +24,8 @@ define('DASHBOARD_PASSWORD_HASH', (string)($config['dashboard_password_hash'] ??
 
 // 1. Datenbank-Initialisierung (SQLite)
 try {
-     $db = new PDO("sqlite:./kosync.db");
+     $db = new PDO("sqlite:" . __DIR__ . "/kosync.db");
+     $db->exec("PRAGMA busy_timeout = 5000");
      $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
      $db->exec("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT)");
      $db->exec("CREATE TABLE IF NOT EXISTS progress (username TEXT, document TEXT, percentage REAL, progress TEXT, timestamp INTEGER, device TEXT, PRIMARY KEY (username, document))");
@@ -98,19 +99,100 @@ function authenticate($db) {
      return $user;
 }
 
-// 3. DASHBOARD: Wenn die Haupt-URL im Browser aufgerufen wird
-if ((preg_match('/\/$/', $requestUri) || preg_match('/\/index\.php$/', $requestUri) || preg_match('/\/kosync\/?$/', $requestUri)) && $method === 'GET' && !isset($_SERVER['HTTP_X_AUTH_USER'])) {
+// 3. DASHBOARD: Session-basierte Anmeldung für den Browser
+$isDashboardPath = preg_match('/\/$/', $requestUri)
+    || preg_match('/\/index\.php$/', $requestUri)
+    || preg_match('/\/kosync\/?$/', $requestUri);
 
-     // HTTP Basic Auth Passwortschutz für den Browser
-     $authUser = $_SERVER['PHP_AUTH_USER'] ?? '';
-     $authPass = $_SERVER['PHP_AUTH_PW'] ?? '';
-     if (!hash_equals(DASHBOARD_USER, $authUser) || !password_verify($authPass, DASHBOARD_PASSWORD_HASH)) {
-         header('WWW-Authenticate: Basic realm="KoSync Dashboard"');
-         http_response_code(401);
-         echo 'Zugriff verweigert. Bitte korrekte Zugangsdaten eingeben.';
-         exit;
-     }
+function render_dashboard_login($error = '') {
+    header('Content-Type: text/html; charset=utf-8');
+    ?>
+    <!DOCTYPE html>
+    <html lang="de">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>KoSync Dashboard Login</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f4f7f6; color: #333; margin: 0; padding: 20px; }
+            .login { max-width: 360px; margin: 80px auto; background: #fff; padding: 24px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+            h1 { font-size: 1.4em; margin-top: 0; color: #2c3e50; }
+            label { display: block; margin: 12px 0 4px; font-weight: 600; }
+            input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 1em; }
+            button { margin-top: 18px; width: 100%; padding: 10px; border: 0; border-radius: 6px; background: #3498db; color: #fff; font-size: 1em; font-weight: 600; cursor: pointer; }
+            .error { background: #fee2e2; color: #991b1b; padding: 10px; border-radius: 6px; margin-bottom: 12px; }
+        </style>
+    </head>
+    <body>
+        <div class="login">
+            <h1>KoSync Dashboard</h1>
+            <?php if ($error !== ''): ?>
+                <div class="error"><?php echo htmlspecialchars($error); ?></div>
+            <?php endif; ?>
+            <form method="post" action="">
+                <input type="hidden" name="csrf" value="<?php echo htmlspecialchars($_SESSION['csrf'] ?? ''); ?>">
+                <label for="username">Benutzer</label>
+                <input id="username" name="username" autocomplete="username" required>
+                <label for="password">Passwort</label>
+                <input id="password" type="password" name="password" autocomplete="current-password" required>
+                <button type="submit" name="login" value="1">Anmelden</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
 
+if ($isDashboardPath && !isset($_SERVER['HTTP_X_AUTH_USER'])) {
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path' => '/',
+        'secure' => true,
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
+    session_start();
+
+    if (isset($_GET['logout'])) {
+        $_SESSION = [];
+        if (ini_get('session.use_cookies')) {
+            setcookie(session_name(), '', time() - 3600, '/');
+        }
+        session_destroy();
+        header('Location: /');
+        exit;
+    }
+
+    if (empty($_SESSION['csrf'])) {
+        $_SESSION['csrf'] = bin2hex(random_bytes(32));
+    }
+
+    if ($method === 'POST' && isset($_POST['login'])) {
+        $loginUser = (string)($_POST['username'] ?? '');
+        $loginPass = (string)($_POST['password'] ?? '');
+        $loginCsrf = (string)($_POST['csrf'] ?? '');
+
+        if (!hash_equals($_SESSION['csrf'], $loginCsrf)) {
+            render_dashboard_login('Sitzung abgelaufen. Bitte erneut versuchen.');
+        }
+
+        if (hash_equals(DASHBOARD_USER, $loginUser) && password_verify($loginPass, DASHBOARD_PASSWORD_HASH)) {
+            session_regenerate_id(true);
+            $_SESSION['dashboard_authenticated'] = true;
+            header('Location: ' . $requestUri);
+            exit;
+        }
+
+        render_dashboard_login('Ungültige Zugangsdaten.');
+    }
+
+    if ($method === 'GET' && empty($_SESSION['dashboard_authenticated'])) {
+        render_dashboard_login();
+    }
+}
+
+if ($isDashboardPath && $method === 'GET' && !isset($_SERVER['HTTP_X_AUTH_USER'])) {
      // Hole alle Lesefortschritte aus der Datenbank
      $stmt = $db->query("SELECT * FROM progress ORDER BY timestamp DESC");
      $books = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -138,6 +220,7 @@ if ((preg_match('/\/$/', $requestUri) || preg_match('/\/index\.php$/', $requestU
      <body>
          <div class="container">
              <h1>Mein geschütztes KoSync Dashboard</h1>
+             <p style="text-align: right; margin-top: -10px;"><a href="?logout=1">Abmelden</a></p>
              <?php if (empty($books)): ?>
                  <p style="color: #64748b;">Noch keine Daten vorhanden. Registriere dein Konto im KOReader!</p>
              <?php else: ?>

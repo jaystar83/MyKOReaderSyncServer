@@ -1,25 +1,35 @@
 # MyKOReaderSyncServer
 
-Ein minimalistischer, selbstgehosteter Synchronisationsserver für den KOReader E-Reader. Das Skript ist komplett in PHP geschrieben und nutzt eine lokale SQLite-Datenbank, weshalb es sich für kostenlose Hosting-Anbieter wie InfinityFree oder FreeWHA eignet.
+Ein minimalistischer, selbstgehosteter Synchronisationsserver für den KOReader. Die Anwendung besteht aus `index.php`, einer lokalen `config.php` und einer SQLite-Datenbank.
 
-Es bietet ein integriertes Web-Dashboard, um die aktuellen Lesestände bequem im Browser zu verfolgen.
+## Hosting-Voraussetzungen
+
+Erforderlich:
+
+- PHP 8.x mit `pdo_sqlite`
+- Apache mit `.htaccess` und `mod_rewrite` (oder gleichwertiges Routing)
+- HTTPS für den Betrieb
+
+Nicht geeignet sind Hoster, die eine globale JavaScript-/Bot-Sperre wie `aes.js` einsetzen (z. B. InfinityFree). KOReader kann diese Challenge nicht lösen; die API-Anfragen erreichen die Anwendung nie. Ein Hoster mit direktem PHP-Zugriff (z. B. Lima-City Free) oder ein eigener Server ist erforderlich.
 
 ## Features
+
 - Kompakt: `index.php` plus lokale `config.php`.
-- Keine MySQL-Datenbank nötig: Verwendet SQLite (`kosync.db`), welche automatisch erstellt wird.
-- Integriertes Dashboard: Visuelle Übersicht über gelesene Bücher, Seitenzahlen und Fortschrittsbalken.
-- Volle KOReader-Kompatibilität: Unterstützt Benutzerregistrierung, Authentifizierung sowie Fortschritts-Push und -Pull.
+- SQLite statt MySQL; `kosync.db` wird automatisch erstellt.
+- Dashboard mit Session-Anmeldung, Fortschrittsbalken und Geräteübersicht.
+- KOReader-Kompatibilität: Registrierung, Login sowie Fortschritts-Push und -Pull.
 
 ## Installation und Einrichtung
 
 ### 1. Konfiguration vorbereiten
+
 1. Lade den Inhalt dieses Repositories herunter.
 2. Kopiere `config.example.php` zu `config.php`.
 3. Trage in `config.php` den KOReader-Benutzernamen und den Dashboard-Benutzernamen ein.
 4. Erzeuge den Hash für das Dashboard-Passwort wie im nächsten Abschnitt beschrieben.
 5. Trage die Ausgabe als `dashboard_password_hash` in `config.php` ein.
 
-`config.php` ist über `.gitignore` ausgeschlossen und darf nicht committet oder öffentlich bereitgestellt werden. Für den Betrieb muss die Datei per FTP mit auf den Server hochgeladen werden.
+`config.php` ist über `.gitignore` ausgeschlossen und darf nicht committet oder öffentlich bereitgestellt werden. Für den Betrieb muss die Datei per FTP auf den Server hochgeladen werden.
 
 ### 2. Dashboard-Passwort-Hash erzeugen
 
@@ -58,8 +68,6 @@ password = getpass.getpass("Dashboard-Passwort: ")
 hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")
 
 # PHP password_verify() erwartet bei bcrypt den Präfix $2y$.
-print(" ")
-print("Paswort-Hash:")
 print(hashed.replace("$2b$", "$2y$", 1))
 ```
 
@@ -86,12 +94,15 @@ echo password_hash('IhrGeheimesPasswort', PASSWORD_DEFAULT), PHP_EOL;
 Die Datei mit einem zufälligen Namen hochladen, einmal im Browser aufrufen, den Hash kopieren und die Datei sofort wieder löschen. Das Klartextpasswort liegt währenddessen auf dem Server. Verwende niemals einen öffentlichen Online-Hash-Generator für ein echtes Passwort.
 
 ### 3. Dateien hochladen
-1. Verbinde dich per FTP mit deinem Webspace (z. B. InfinityFree) und navigiere in das Verzeichnis `/htdocs`.
-2. Lösche die Standard-Willkommensseite (z. B. `index2.html`).
-3. Lade `index.php`, `config.php` und `.htaccess` direkt in den `/htdocs`-Ordner hoch.
-4. `config.example.php` muss nicht auf den Server.
+
+1. Verbinde dich per FTP mit deinem Webspace und navigiere in das Webroot-Verzeichnis.
+   - Lima-City Free: `default-website`
+   - Viele andere Hoster: `/htdocs` oder `public_html`
+2. Lade `index.php`, `config.php` und `.htaccess` in dieses Verzeichnis hoch.
+3. `config.example.php` wird auf dem Server nicht benötigt.
 
 ### 4. Aufbau von config.php
+
 ```php
 <?php
 return [
@@ -101,19 +112,20 @@ return [
 ];
 ```
 
-`allowed_user` ist der einzige Benutzername, der sich über die API registrieren darf. `dashboard_user` und `dashboard_password_hash` schützen das Browser-Dashboard per HTTP Basic Auth. Das Passwort selbst steht nicht in der Datei, sondern nur der bcrypt-Hash.
+`allowed_user` ist der einzige Benutzername, der sich über die API registrieren darf. `dashboard_user` und `dashboard_password_hash` schützen das Dashboard per Session-Anmeldung mit Formular. Das Passwort selbst steht nicht in der Datei, sondern nur der bcrypt-Hash.
 
 ### 5. URL-Routing und Dateischutz aktivieren (.htaccess)
+
 Die `.htaccess` leitet alle API-Anfragen an `index.php` weiter und blockiert den direkten HTTP-Zugriff auf `config.php`, SQLite-Dateien sowie Backup- und Editor-Dateien:
 
 ```apache
 RewriteEngine On
 
-# HTTPS erzwingen (optional, falls kein SSL verfügbar ist)
+# 1. HTTPS erzwingen
 RewriteCond %{HTTPS} off
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
-# Direktzugriff auf Konfiguration, Datenbanken und Backup-Dateien blockieren
+# 2. Direktzugriff auf Konfiguration, Datenbanken und Backup-Dateien blockieren
 <FilesMatch "(?i)(^config\.php$|^config\.example\.php$|\.(db|sqlite|sqlite3)(-journal|-wal|-shm)?$|~$|\.(bak|old|orig|save|swp|swo)$)">
     <IfModule mod_authz_core.c>
         Require all denied
@@ -124,7 +136,10 @@ RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
     </IfModule>
 </FilesMatch>
 
-# Alle nicht existierenden Pfade an index.php weiterleiten
+# 3. API-Pfade immer an die Root-index.php leiten
+RewriteRule ^(syncs|users)(/|$) index.php [QSA,L]
+
+# 4. Alle nicht existierenden Pfade an index.php weiterleiten
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ index.php [QSA,L]
@@ -136,18 +151,30 @@ Wichtig: Die Datenbank und `config.php` liegen aus Hosting-Gründen im öffentli
 
 1. Öffne den KOReader auf deinem E-Reader.
 2. Navigiere im Menü zu Fortschritt-Synchronisation -> Kosync-Server einrichten.
-3. Trage deine eigene Server-URL ein, zum Beispiel `https://deine-domain.example`.
-4. Erstelle im KOReader ein neues Benutzerkonto. Der Benutzername muss mit `allowed_user` übereinstimmen.
-5. Fertig. Der Lesestatus wird ab jetzt automatisch synchronisiert.
+3. Trage unter `Custom sync server` deine Server-URL ein, zum Beispiel:
+
+   ```text
+   https://deine-domain.example
+   ```
+
+4. Speichere die Einstellung und melde dich ab.
+5. Registriere dich mit dem Benutzernamen, der exakt `allowed_user` entspricht.
+6. Nach der Registrierung einloggen und den Fortschritt pushen.
+
+Wichtig: Die URL muss exakt mit der Domain übereinstimmen, unter der das Dashboard erreichbar ist. Ein zusätzlicher Pfad wie `/syncs` oder `/kosync` gehört nicht in die Server-URL.
 
 ## Sicherheitshinweise
-- Konfiguration: `config.php` enthält Zugangsdaten, ist in `.gitignore` eingetragen und wird per `.htaccess` für HTTP gesperrt. Nach dem Anlegen des Kontos kann `allowed_user` auf einen zufälligen Wert gesetzt werden, um weitere Registrierungen zu verhindern.
-- Dashboard: Das Dashboard ist durch HTTP Basic Auth geschützt. Gespeichert wird nur ein bcrypt-Hash des Passworts. Verwende ein langes, zufälliges und ausschließlich hier verwendetes Passwort.
-- Datenbank: `kosync.db` liegt im Web-Root und wird über die `.htaccess` für HTTP-Zugriffe gesperrt. Prüfe nach dem Upload, dass ein direkter Aufruf von `/kosync.db` mit HTTP 403 endet.
+
+- Konfiguration: `config.php` enthält Zugangsdaten, ist in `.gitignore` eingetragen und wird per `.htaccess` für HTTP gesperrt. Nach dem Anlegen des Kontos sollte `allowed_user` auf einen zufälligen Wert gesetzt werden, um weitere Registrierungen zu verhindern.
+- Dashboard: Das Dashboard ist durch eine Session-Anmeldung mit Formular geschützt. Das Passwort wird mit `password_verify()` gegen einen bcrypt-Hash geprüft. Das Session-Cookie ist `HttpOnly`, `Secure` und `SameSite=Lax`; nach dem Login wird die Session-ID erneuert. Ein CSRF-Token schützt das Formular. Verwende ein langes, zufälliges und ausschließlich hier verwendetes Passwort.
+- Datenbank: `kosync.db` liegt im Web-Root und wird über die `.htaccess` für HTTP-Zugriffe gesperrt. Prüfe nach dem Upload, dass ein direkter Aufruf von `/kosync.db` mit HTTP 403 endet. Dasselbe gilt für `/config.php`.
 - Registrierung: Neue Konten sind auf `allowed_user` beschränkt. Bei einer frischen Installation sollte das Konto zeitnah angelegt werden, damit der bekannte Benutzername nicht von Dritten zuerst registriert wird.
 - Passwörter: KOReader sendet bei der Registrierung und beim Login den MD5-Hash des Passworts (`md5(password)`) als Auth-Key; beim Login im Header `X-Auth-Key`. Der Server akzeptiert diesen 32-stelligen Hex-Wert unverändert und speichert ihn nicht im Klartext, sondern als mit `password_hash()` gesicherten Hash. Aus Kompatibilitätsgründen wird bei der Registrierung zusätzlich ein Klartextpasswort akzeptiert und auf den MD5-Auth-Key normalisiert. MD5 ist protokollbedingt nicht als starker Passwort-Hash geeignet; die Übertragung muss daher zwingend über HTTPS erfolgen.
 - Altbestände: Zeilen mit rohem MD5-Key oder Klartextpasswort werden beim nächsten erfolgreichen Login automatisch auf `password_hash()` migriert.
-- HTTPS: Nutze ein SSL-Zertifikat deines Hosters, um die Datenübertragung zu verschlüsseln. HTTP Basic Auth überträgt die Zugangsdaten bei jeder Anfrage.
+- Diagnose: `auth_check.php`, `test_api.py` und `hash.py` sind temporäre lokale Hilfsmittel. Sie dürfen nicht auf den Server hochgeladen oder committet werden. Nach dem Test löschen.
+- Brute-Force: Es gibt keine automatische Sperre für fehlerhafte Dashboard- oder API-Logins. Verwende starke Passwörter; bcrypt verlangsamt Angriffe.
+- HTTPS: Nutze ein SSL-Zertifikat deines Hosters. Die `.htaccess` erzwingt HTTPS. Session-Cookies und KOReader-Auth-Keys dürfen nur über HTTPS übertragen werden.
 
 ## Lizenz
+
 Dieses Projekt steht unter der MIT-Lizenz. Siehe die `LICENSE`-Datei für weitere Details.

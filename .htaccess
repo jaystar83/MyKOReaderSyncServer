@@ -15,7 +15,11 @@ RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
     </IfModule>
 </FilesMatch>
 
-# 3. Alle nicht existierenden Pfade an index.php weiterleiten
+# 3. API-Pfade immer an die Root-index.php leiten, auch wenn gleichnamige
+#    Verzeichnisse existieren.
+RewriteRule ^(syncs|users)(/|$) index.php [QSA,L]
+
+# 4. Alle nicht existierenden Pfade an index.php weiterleiten
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ index.php [QSA,L]

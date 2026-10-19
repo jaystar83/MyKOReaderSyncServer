@@ -12,9 +12,9 @@ return [
     // Einziger Benutzername, der sich über die KOReader-API registrieren darf.
     'allowed_user' => 'IhrWunschNutzername',
 
-    // Login für das Browser-Dashboard (HTTP Basic Auth).
+    // Login für das Browser-Dashboard (Session-Anmeldung mit Formular).
     'dashboard_user' => 'admin',
 
-    // Mit password_hash() erzeugter Hash des Dashboard-Passworts.
+    // Mit password_hash() erzeugter bcrypt-Hash des Dashboard-Passworts.
     'dashboard_password_hash' => '',
 ];

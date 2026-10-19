@@ -14,5 +14,7 @@ kosync.db-shm
 *.save
 *~
 
-# Tempräre Skripte
-hash.py
+# Lokale Diagnose- und Hilfsskripte
+
+# Lokale Entwicklungsdokumentation
+DevDocu/
