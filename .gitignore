@@ -1,0 +1,18 @@
+# Lokale Konfiguration mit Zugangsdaten
+config.php
+
+# SQLite-Datenbank und Hilfsdateien
+kosync.db
+kosync.db-journal
+kosync.db-wal
+kosync.db-shm
+
+# Backup- und Editor-Dateien
+*.bak
+*.old
+*.orig
+*.save
+*~
+
+# Tempräre Skripte
+hash.py

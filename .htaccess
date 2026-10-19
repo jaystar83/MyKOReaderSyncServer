@@ -4,8 +4,8 @@ RewriteEngine On
 RewriteCond %{HTTPS} off
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
-# 2. Direktzugriff auf Datenbank- und SQLite-Hilfsdateien blockieren
-<FilesMatch "(?i)\.(db|sqlite|sqlite3)(-journal|-wal|-shm)?$">
+# 2. Direktzugriff auf Konfiguration, Datenbanken und Backup-Dateien blockieren
+<FilesMatch "(?i)(^config\.php$|^config\.example\.php$|\.(db|sqlite|sqlite3)(-journal|-wal|-shm)?$|~$|\.(bak|old|orig|save|swp|swo)$)">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>

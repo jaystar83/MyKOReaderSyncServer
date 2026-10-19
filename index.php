@@ -1,10 +1,26 @@
 <?php
 // =========================================================================
-// CONFIGURATION - BITTE HIER ANPASSEN!
+// CONFIGURATION - Wird aus config.php geladen (nicht versionieren!)
 // =========================================================================
-define('ALLOWED_USER', 'IhrWunschNutzername'); // Der Username für Ihren KOReader
-define('DASHBOARD_USER', 'admin');           // Login-Name für das Browser-Dashboard
-define('DASHBOARD_PASS', 'IhrGeheimesPasswort'); // Passwort für das Browser-Dashboard
+$configFile = __DIR__ . '/config.php';
+if (!is_file($configFile)) {
+     header("Content-Type: application/json");
+     http_response_code(500);
+     echo json_encode(["error" => "Konfiguration fehlt"]);
+     exit;
+}
+
+$config = require $configFile;
+if (!is_array($config)) {
+     header("Content-Type: application/json");
+     http_response_code(500);
+     echo json_encode(["error" => "Konfiguration ungültig"]);
+     exit;
+}
+
+define('ALLOWED_USER', (string)($config['allowed_user'] ?? ''));
+define('DASHBOARD_USER', (string)($config['dashboard_user'] ?? ''));
+define('DASHBOARD_PASSWORD_HASH', (string)($config['dashboard_password_hash'] ?? ''));
 
 // 1. Datenbank-Initialisierung (SQLite)
 try {
@@ -29,7 +45,8 @@ if ((preg_match('/index\.php$/', $requestUri) || $requestUri == '') && isset($_S
 }
 
 // Hilfsfunktion: Passwort in den KOReader-Auth-Key (MD5) normalisieren.
-// KOReader überträgt bei der Registrierung Klartext und beim Login MD5.
+// KOReader sendet bei Registrierung und Login md5(password) als 32-stelligen
+// Hex-String. Klartext wird nur als zusätzlicher Kompatibilitätspfad akzeptiert.
 // Bereits gehashte 32-stellige Hex-Werte werden unverändert übernommen.
 function normalize_auth_key($password) {
      $password = (string)$password;
@@ -87,7 +104,7 @@ if ((preg_match('/\/$/', $requestUri) || preg_match('/\/index\.php$/', $requestU
      // HTTP Basic Auth Passwortschutz für den Browser
      $authUser = $_SERVER['PHP_AUTH_USER'] ?? '';
      $authPass = $_SERVER['PHP_AUTH_PW'] ?? '';
-     if (!hash_equals(DASHBOARD_USER, $authUser) || !hash_equals(DASHBOARD_PASS, $authPass)) {
+     if (!hash_equals(DASHBOARD_USER, $authUser) || !password_verify($authPass, DASHBOARD_PASSWORD_HASH)) {
          header('WWW-Authenticate: Basic realm="KoSync Dashboard"');
          http_response_code(401);
          echo 'Zugriff verweigert. Bitte korrekte Zugangsdaten eingeben.';
@@ -195,7 +212,7 @@ if (preg_match('/\/users\/create$/', $requestUri) && $method === 'POST') {
          exit;
      }
 
-     // Auth-Key normalisieren und nur als password_hash() speichern.
+     // KOReader sendet md5(password); der Wert wird nur als password_hash() gespeichert.
      $authKey = normalize_auth_key($input['password']);
      $stmt = $db->prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)");
      $stmt->execute([$input['username'], password_hash($authKey, PASSWORD_DEFAULT)]);
@@ -266,18 +283,12 @@ if (preg_match('/\/syncs\/progress/', $requestUri)) {
          $timestamp  = isset($input['timestamp']) ? (int)$input['timestamp'] : time();
          $device     = isset($input['device']) ? (string)$input['device'] : 'Unknown';
 
-         // Abwärtskompatibel ohne ON CONFLICT: REPLACE INTO in einer Transaktion.
+         // Abwärtskompatibel ohne ON CONFLICT: REPLACE INTO ist als einzelnes
+         // Statement atomar; eine explizite Transaktion ist nicht erforderlich.
          try {
-             $db->beginTransaction();
-
              $stmt = $db->prepare("REPLACE INTO progress (username, document, percentage, progress, timestamp, device) VALUES (?, ?, ?, ?, ?, ?)");
              $stmt->execute([$user, $document, $percentage, $progress, $timestamp, $device]);
-
-             $db->commit();
          } catch (Throwable $e) {
-             if ($db->inTransaction()) {
-                 $db->rollBack();
-             }
              http_response_code(500);
              echo json_encode(["error" => "Datenbankfehler"]);
              exit;
