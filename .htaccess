@@ -1,16 +1,21 @@
 RewriteEngine On
 
-# 1. Erzwinge HTTPS (Sicherheits-Verschlüsselung)
+# 1. Erzwinge HTTPS (Sicherheits-Verschluesselung)
 RewriteCond %{HTTPS} off
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
-# 2. Sperre den Direktzugriff auf die SQLite-Datenbankdatei
-<Files "kosync.db">
-     Order allow,deny
-     Deny from all
-</Files>
+# 2. Direktzugriff auf Datenbank- und SQLite-Hilfsdateien blockieren
+<FilesMatch "(?i)\.(db|sqlite|sqlite3)(-journal|-wal|-shm)?$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
 
-# 3. Leite alle API-Anfragen sauber an die index.php weiter
+# 3. Alle nicht existierenden Pfade an index.php weiterleiten
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ index.php [QSA,L]

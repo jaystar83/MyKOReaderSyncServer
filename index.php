@@ -28,30 +28,68 @@ if ((preg_match('/index\.php$/', $requestUri) || $requestUri == '') && isset($_S
      $requestUri = $_SERVER['REDIRECT_URL'];
 }
 
+// Hilfsfunktion: Passwort in den KOReader-Auth-Key (MD5) normalisieren.
+// KOReader überträgt bei der Registrierung Klartext und beim Login MD5.
+// Bereits gehashte 32-stellige Hex-Werte werden unverändert übernommen.
+function normalize_auth_key($password) {
+     $password = (string)$password;
+     if (preg_match('/^[a-f0-9]{32}$/i', $password)) {
+          return strtolower($password);
+     }
+     return md5($password);
+}
+
 // Hilfsfunktion: KOReader Authentifizierung prüfen via HTTP-Header
 function authenticate($db) {
      $user = $_SERVER['HTTP_X_AUTH_USER'] ?? '';
      $key  = $_SERVER['HTTP_X_AUTH_KEY'] ?? '';
 
-     if (empty($user) || empty($key)) return false;
+     if ($user === '' || $key === '') return false;
+
+     $key = normalize_auth_key($key);
 
      $stmt = $db->prepare("SELECT password_hash FROM users WHERE username = ?");
      $stmt->execute([$user]);
      $u = $stmt->fetch(PDO::FETCH_ASSOC);
 
-     if ($u && hash_equals($u['password_hash'], $key)) {
-         return $user;
+     if (!$u) return false;
+
+     $stored = (string)$u['password_hash'];
+     $valid = false;
+     $upgrade = false;
+
+     if (password_verify($key, $stored)) {
+          $valid = true;
+     } elseif (hash_equals(strtolower($stored), $key)) {
+          // Altbestand: ungesicherter MD5-String
+          $valid = true;
+          $upgrade = true;
+     } elseif (hash_equals(md5($stored), $key)) {
+          // Altbestand: Klartextpasswort
+          $valid = true;
+          $upgrade = true;
      }
-     return false;
+
+     if (!$valid) return false;
+
+     // Erfolgreiche Altbestands-Anmeldung direkt auf password_hash() migrieren.
+     if ($upgrade) {
+          $stmt = $db->prepare("UPDATE users SET password_hash = ? WHERE username = ?");
+          $stmt->execute([password_hash($key, PASSWORD_DEFAULT), $user]);
+     }
+
+     return $user;
 }
 
 // 3. DASHBOARD: Wenn die Haupt-URL im Browser aufgerufen wird
 if ((preg_match('/\/$/', $requestUri) || preg_match('/\/index\.php$/', $requestUri) || preg_match('/\/kosync\/?$/', $requestUri)) && $method === 'GET' && !isset($_SERVER['HTTP_X_AUTH_USER'])) {
 
      // HTTP Basic Auth Passwortschutz für den Browser
-     if (!isset($_SERVER['PHP_AUTH_USER']) || $_SERVER['PHP_AUTH_USER'] !== DASHBOARD_USER || $_SERVER['PHP_AUTH_PW'] !== DASHBOARD_PASS) {
+     $authUser = $_SERVER['PHP_AUTH_USER'] ?? '';
+     $authPass = $_SERVER['PHP_AUTH_PW'] ?? '';
+     if (!hash_equals(DASHBOARD_USER, $authUser) || !hash_equals(DASHBOARD_PASS, $authPass)) {
          header('WWW-Authenticate: Basic realm="KoSync Dashboard"');
-         header('HTTP/1.0 401 Unauthorized');
+         http_response_code(401);
          echo 'Zugriff verweigert. Bitte korrekte Zugangsdaten eingeben.';
          exit;
      }
@@ -82,7 +120,7 @@ if ((preg_match('/\/$/', $requestUri) || preg_match('/\/index\.php$/', $requestU
      </head>
      <body>
          <div class="container">
-             <h1>🔒 Mein geschütztes KoSync Dashboard</h1>
+             <h1>Mein geschütztes KoSync Dashboard</h1>
              <?php if (empty($books)): ?>
                  <p style="color: #64748b;">Noch keine Daten vorhanden. Registriere dein Konto im KOReader!</p>
              <?php else: ?>
@@ -134,7 +172,9 @@ header("Content-Type: application/json");
 // REGISTRIERUNG: POST /users/create
 if (preg_match('/\/users\/create$/', $requestUri) && $method === 'POST') {
      $input = json_decode(file_get_contents('php://input'), true);
-     if (!isset($input['username']) || !isset($input['password'])) {
+     if (!is_array($input) || !isset($input['username'], $input['password'])
+         || !is_string($input['username']) || !is_string($input['password'])
+         || $input['username'] === '' || $input['password'] === '') {
          http_response_code(400);
          echo json_encode(["error" => "Ungültige Eingabe"]);
          exit;
@@ -155,8 +195,10 @@ if (preg_match('/\/users\/create$/', $requestUri) && $method === 'POST') {
          exit;
      }
 
+     // Auth-Key normalisieren und nur als password_hash() speichern.
+     $authKey = normalize_auth_key($input['password']);
      $stmt = $db->prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)");
-     $stmt->execute([$input['username'], $input['password']]);
+     $stmt->execute([$input['username'], password_hash($authKey, PASSWORD_DEFAULT)]);
 
      http_response_code(201);
      echo json_encode(["username" => $input['username']]);
@@ -211,31 +253,39 @@ if (preg_match('/\/syncs\/progress/', $requestUri)) {
      // PUSH: PUT /syncs/progress
      if ($method === 'PUT') {
          $input = json_decode(file_get_contents('php://input'), true);
-         if (!isset($input['document']) || !isset($input['progress'])) {
+         if (!is_array($input) || !isset($input['document'], $input['progress'])
+             || !is_string($input['document']) || $input['document'] === '') {
              http_response_code(400);
              echo json_encode(["error" => "Daten unvollständig"]);
              exit;
          }
 
-         $timestamp = $input['timestamp'] ?? time();
+         $document   = $input['document'];
+         $percentage = isset($input['percentage']) ? (float)$input['percentage'] : 0.0;
+         $progress   = (string)$input['progress'];
+         $timestamp  = isset($input['timestamp']) ? (int)$input['timestamp'] : time();
+         $device     = isset($input['device']) ? (string)$input['device'] : 'Unknown';
 
-         $stmt = $db->prepare("INSERT INTO progress (username, document, percentage, progress, timestamp, device)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(username, document) DO UPDATE SET
-             percentage=excluded.percentage, progress=excluded.progress, timestamp=excluded.timestamp, device=excluded.device");
+         // Abwärtskompatibel ohne ON CONFLICT: REPLACE INTO in einer Transaktion.
+         try {
+             $db->beginTransaction();
 
+             $stmt = $db->prepare("REPLACE INTO progress (username, document, percentage, progress, timestamp, device) VALUES (?, ?, ?, ?, ?, ?)");
+             $stmt->execute([$user, $document, $percentage, $progress, $timestamp, $device]);
 
-        $stmt->execute([
-        $user,
-        $input['document'],
-        $input['percentage'] ?? 0,
-        $input['progress'],
-        $timestamp,
-        $input['device'] ?? 'Unknown'
-        ]);
-        echo json_encode(["status" => "success"]);
-        exit;
-    }
+             $db->commit();
+         } catch (Throwable $e) {
+             if ($db->inTransaction()) {
+                 $db->rollBack();
+             }
+             http_response_code(500);
+             echo json_encode(["error" => "Datenbankfehler"]);
+             exit;
+         }
+
+         echo json_encode(["status" => "success"]);
+         exit;
+     }
 }
 // Fallback für nicht gefundene Routen
 http_response_code(404);
